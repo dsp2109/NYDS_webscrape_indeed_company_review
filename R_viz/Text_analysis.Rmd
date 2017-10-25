@@ -1,0 +1,179 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+
+```{r}
+library(ggplot2)
+library(tidytext)
+library(dplyr)
+library(stringr)
+library(reshape2)
+library(SnowballC)
+library(wordcloud)
+library(RColorBrewer)
+
+library(plotly)
+
+this.dir <- dirname(rstudioapi::getActiveDocumentContext()$path)
+setwd(this.dir)
+#https://stackoverflow.com/questions/13672720/r-command-for-setting-working-directory-to-source-file-location
+
+load("../Data/co_rev_loaded.RData")
+text_df = comp_train
+
+```
+
+Tidying the data
+```{r}
+
+
+text_cols = c('review_title','main_text','reviewer_job_title', 'pro_text', 'con_text')
+tidy_text = text_df[text_cols]
+tidy_text['review_id'] = row.names(tidy_text)
+tidy_text = melt(tidy_text, id = 'review_id')
+
+tidy_text = tidy_text %>% 
+  unnest_tokens(word, value)
+
+tidy_text = tidy_text %>% 
+  filter(!is.na(word))
+save(tidy_text, file = "tidy_text.Rda")
+View(head(tidy_text))
+
+
+
+
+```
+
+
+Drop stop words:
+```{r}
+rm(list = ls())
+load("tidy_text.Rda")
+data(stop_words)
+
+tidy_text_dropstop <- tidy_text %>%
+  anti_join(stop_words)
+
+tidy_text_dropstop = tidy_text_dropstop %>% 
+  filter(!is.na(word))
+
+
+save(tidy_text_dropstop,file = "tidy_text_dropped.Rda")
+
+```
+
+Join in attributes
+```{r}
+load("../Data/co_rev_loaded.RData")
+comp_train = comp_train %>% mutate(review_id = rownames(comp_train))
+head(tidy_text_dropstop)
+head(comp_train)
+# want to add: agg_rating, company_overall_rating, company_industry, company_name
+
+#14727730 before
+tidy_text_drop_stop = tidy_text_dropstop %>% 
+  left_join(comp_train %>% select(review_id, agg_rating, company_overall_rating, company_industry, company_name),
+             by = 'review_id')
+
+tidy_text_dropstop = tidy_text_drop_stop
+rm(tidy_text_drop_stop) 
+
+save(tidy_text_dropstop,file = "tidy_text_dropped.Rda")
+
+
+```
+
+Counting the words
+```{r}
+load("tidy_text_dropped.Rda")
+load("tidy_text.Rda")
+
+tidy_text %>%
+  count(word, sort = TRUE)
+
+tidy_text_dropstop = tidy_text_dropstop %>% 
+  filter(word != 'de', word != 'ã')
+
+wordcount = tidy_text_dropstop %>%
+  count(word, sort = TRUE)
+wordcount
+wordcount = wordcount %>% 
+  filter(word != 'de', word != 'ã')
+wordc_filt = wordcount[15,'n']
+
+tidy_text_dropstop = tidy_text_dropstop %>% mutate(word_stem = wordStem(word))
+
+```
+
+Graphing common words:
+```{r}
+wordcount[1:15,] %>%
+  ggplot(aes(reorder(word,n), n)) +
+  geom_col() +
+  xlab(NULL) +
+  coord_flip()
+
+
+
+```
+
+```{r}
+set.seed(1234)
+
+
+wordcloud(words = wordcount$word, freq = wordcount$n, min.freq = 1,
+          max.words=200, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+```
+
+```{r}
+wordcount_con = tidy_text_dropstop %>%
+  filter(variable == 'con_text') %>% 
+  count(word, sort = TRUE)
+
+wordcount_pro = tidy_text_dropstop %>%
+  filter(variable == 'pro_text') %>% 
+  count(word, sort = TRUE)
+
+#http://www.sthda.com/english/wiki/text-mining-and-word-cloud-fundamentals-in-r-5-simple-steps-you-should-know
+wordcloud(words = wordcount_pro$word, freq = wordcount_pro$n, min.freq = 1,
+          max.words=200, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+wordcloud(words = wordcount_con$word, freq = wordcount_con$n, min.freq = 1,
+          max.words=200, random.order=FALSE, rot.per=0.35, 
+          colors=brewer.pal(8, "Dark2"))
+
+```
+
+Comparison Cloud:
+```{r}
+
+comp_cloud_df = tidy_text_dropstop %>% 
+  filter(variable %in% c('pro_text','con_text')) %>% 
+  count(word, variable, sort = TRUE) %>%
+  acast(word ~ variable, value.var = "n", fill = 0) 
+
+comp_cloud_df %>%
+  comparison.cloud(colors = brewer.pal(5, "Dark2"),
+                   max.words = 200, title.size = 1.5)
+```
+
+
+
+
+
+```{r}
+tidy_text_dropstop$agg_rating = factor(tidy_text_dropstop$agg_rating,levels=
+                               c(1,2,3,4,5)) 
+
+tidy_text_dropstop %>% 
+  count(word, agg_rating, sort = TRUE) %>%
+  acast(word ~ agg_rating, value.var = "n", fill = 0) %>%
+  comparison.cloud(colors = brewer.pal(5, "Dark2"),
+                   max.words = 200)
+```
+

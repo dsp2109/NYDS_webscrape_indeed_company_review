@@ -1,0 +1,552 @@
+---
+title: 'House Prices: Advanced Regression Techniques'
+author: "NYC Data Science Academy"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      cache = TRUE,
+                      warning = FALSE, 
+                      message = FALSE,
+                      tidy=FALSE,
+                      fig.height=6,
+                      fig.width=10)
+
+
+```
+
+
+## OUTLINE
+
+1. Introduction
+2. Loading Data
+3. Visualizations
+4. Pre-Processing
+5. Model Training and Parameter Tuning
+6. Variable Importance and Feature selection
+7. Summary
+
+
+
+## 2. Data Loading & Preparation
+
+### 2.1 Loading data from csv
+
+```{r load_data}
+this.dir <- dirname(rstudioapi::getActiveDocumentContext()$path)
+setwd(this.dir)
+#https://stackoverflow.com/questions/13672720/r-command-for-setting-working-directory-to-source-file-location
+
+## load training data
+comp_train <- read.csv("../Data/co_rev_sample_filtered.csv", 
+                        header = TRUE, 
+                        na.strings = "",
+                        stringsAsFactors = FALSE)
+
+comp_train2 = read.csv("../Data/co_rev_sample_filtered_pt2.csv", 
+                        header = TRUE, 
+                        na.strings = "",
+                        stringsAsFactors = FALSE)
+
+comp_train = rbind(comp_train, comp_train2)
+rm(comp_train2)
+
+## load test data
+# house_test <- read.csv("./test.csv", 
+#                         header = TRUE, 
+#                         na.strings = "",
+#                         stringsAsFactors = FALSE)
+
+str(comp_train)
+
+library(dplyr)
+names(comp_train)
+```
+
+### 2.2 Getting factor levels from data description
+
+```{r factor_levels}
+#not factoring categorical for now
+
+# ## get levels of categorical features from data description
+# factorLevel <- list()
+# conn <- file("./data_description.txt", open="r")
+# f <-readLines(conn)
+# for (line in f){
+#   if(!grepl("^[[:blank:]]", line) & grepl(": ", line)) {
+#     col_name <<- trimws(gsub(":.*", "", line))
+#   } else {
+#     level <- trimws(gsub("\t.*", "", line))
+#     if (level != "") {
+#       factorLevel[[col_name]] <- c(factorLevel[[col_name]], level)
+#     }
+#   }
+# }
+# close(conn)
+# 
+# print(factorLevel[1:6])
+```
+
+### 2.3 Checking factor levels with data
+
+```{r check_levels}
+## check if levels in description cover unique data values
+for (varname in names(factorLevel)) {
+  levelDiff <- setdiff(unique(house_train[[varname]]), 
+                       factorLevel[[varname]])
+  if(length(levelDiff)) {
+    print(paste(varname, 
+                paste(levelDiff, collapse = ", "), 
+                sep = ": "))
+  }
+}
+
+```
+
+
+### 2.4 Fixing level names
+
+```{r fix_levels}
+## fix those levels that don't match with data
+## ignore "NA" as they will be considered as missing when converting categorical to factors
+
+unique(house_train$MSZoning)
+factorLevel$MSZoning
+factorLevel$MSZoning[2] <- "C (all)"
+
+unique(house_train$Neighborhood)
+factorLevel$Neighborhood
+factorLevel$Neighborhood[13] <- "NAmes"
+
+unique(house_train$BldgType)
+factorLevel$BldgType
+factorLevel$BldgType[c(2,3,5)] <- c("2fmCon","Duplex","Twnhs")
+
+unique(house_train$Exterior2nd)
+factorLevel$Exterior2nd
+factorLevel$Exterior2nd[c(17,6,3)] <- c("Wd Shng","CmentBd","Brk Cmn")
+
+## Get levels that only appear in the dataset
+for (varname in names(factorLevel)) {
+  factorLevel[[varname]] <- intersect(factorLevel[[varname]],
+                                      unique(house_train[[varname]]))
+}
+
+## Re-run the previous cell to double check
+```
+
+### 2.5 Converting column data types
+
+```{r convert_types}
+#change to pcts
+topct <- function(x) { as.numeric( sub("\\D*([0-9.]+)\\D*","\\1",x) )/100 }
+comp_train[['ceo_approval_pct']] = topct(comp_train[['ceo_approval_pct']])
+
+num_cols = c("Quick.paced", "Stressful","Balanced", "Competitive", "Relaxed","Cut.throat")
+comp_train[,num_cols] = sapply(comp_train[,num_cols], as.numeric)
+
+#dates: https://stats.idre.ucla.edu/r/faq/how-can-i-format-a-string-containing-a-date-into-r-date-object/
+comp_train[['rev_date_num']] = as.Date(comp_train[['review_date']], '%B %d, %Y')
+
+### Case study code:
+## convert column datatype to numeric / factor
+## On training dataset
+# for (varname in names(house_train)[-1]) {
+#   if (varname %in% names(factorLevel)) {
+#     house_train[[varname]] <- factor(house_train[['MSSubClass']], 
+#                                      levels = factorLevel[['MSSubClass']])
+#   } else {
+#     house_train[[varname]] <- as.numeric(house_train[[varname]])
+#   }
+# }
+# 
+# ## On testing dataset
+# for (varname in names(house_test)[-1]) {
+#   if (varname %in% names(factorLevel)) {
+#     house_test[[varname]] <- factor(house_test[[varname]], 
+#                                     levels = factorLevel[[varname]])
+#   } else {
+#     house_test[[varname]] <- as.numeric(house_test[[varname]])
+#   }
+# }
+```
+
+Converting company categories
+```{r}
+sub = comp_train %>% filter(is.na(Quick.paced), is.na(Slow.paced))
+#slow-paced seems like a sparse, useless variable
+comp_train$Slow.paced = NULL
+sub = comp_train %>% filter(!is.na(Relaxed), !is.na(Cut.throat))
+View(sub)
+
+
+```
+
+Adding date cols:
+```{r}
+comp_train$month = months(comp_train$rev_date_num)
+comp_train$year = format(comp_train$rev_date_num, '%Y')
+comp_train$weekday = weekdays(comp_train$rev_date_num)
+```
+
+
+### 2.6 (Optional) Saving data
+
+```{r save_loaded}
+comp_train$X <- NULL
+rownames(comp_train) <- comp_train$review_id
+comp_train$review_id <- NULL
+save(comp_train, file = "../Data/co_rev_loaded.RData")
+```
+
+
+## 3. Visualizations
+
+### Loading data (from step 2)
+
+```{r read_loaded}
+library(ggplot2)
+library(gridExtra)
+library(tabplot)
+library(lsr)
+library(corrplot)
+library(dplyr)
+library(plotly)
+
+rm(list = ls())
+load("../Data/co_rev_loaded.RData")
+```
+
+
+
+
+```{r}
+numeric_features <- names(comp_train)[sapply(comp_train, is.numeric)]
+print(numeric_features)
+
+review_spec_cols = c('agg_rating','comp_ben_rating', 'culture_rating', 'jobsec_advancement_rating', 
+       'management_rating', 'work_life_rating', 'helpful_downvote_count',
+       'helpful_upvote_count','review_date', 'review_title',
+       'reviewer_company_empl_status', 'reviewer_job_location',
+       'reviewer_job_title', 'main_text', 'con_text', 'pro_text','rev_date_num')
+
+company_cols = names(comp_train)[!(names(comp_train) %in% review_spec_cols)]
+
+review_spec_numeric = review_spec_cols[review_spec_cols %in% numeric_features]
+
+summary(comp_train)
+```
+
+```{r}
+company_grp = comp_train %>% 
+  group_by(company_name) %>% 
+  summarise_if(is.numeric, mean, na.rm = T)
+
+cols = names(company_grp)
+cols = cols[c(1:7,10:23)]
+
+
+
+tidy_company = melt(company_grp[,cols], id = 'company_name')
+
+co_ratings = tidy_company %>% filter(value >= 1, value <= 5) %>% mutate(mean_individual_rating = mean())
+
+ggplot(co_ratings) + geom_density(aes(x = value)) + facet_wrap(~variable)
+  
+```
+
+
+### 3.1 Agg_Rating Histogram
+
+```{r hist_saleprice}
+## histogram on SalePrice
+g = ggplot(comp_train)
+grid.arrange(g + 
+               geom_histogram(aes(agg_rating), bins = 5), 
+             g + 
+               geom_histogram(aes(company_overall_rating), bins = 8), 
+             ncol = 2)
+
+ 
+
+# ggplotly(ggplot(comp_train) + 
+#                geom_histogram(aes(company_overall_rating), bins = 15), 
+#              ncol = 2)
+```
+
+
+
+```{r}
+by_co = comp_train %>% 
+  filter(year %in% 2016:2017) %>% 
+  group_by(company_industry, company_name) %>% 
+  summarise_at(numeric_features, mean, na.rm = T)
+
+ggplot(by_co, aes(x = company_overall_rating, y = agg_rating)) + 
+  geom_point( position = "jitter") + #could add 'aes(color = company_industry),'
+  geom_smooth(method = "lm")
+  
+```
+
+Histogram of all features
+```{r}
+compid <- mutate(comp_train[numeric_features], id=as.numeric(rownames(comp_train)))
+melt_df = melt(compid, id = 'id')
+
+ggplot(melt_df) + geom_histogram(aes(x = value), bins = 5) + facet_wrap(~variable, scales="free")
+
+```
+
+I want to make it known somehow that the variables below are discrete and so shouldn't be represented by scatter plots.
+
+```{r}
+
+review_numerics = numeric_features[numeric_features %in% review_spec_cols]
+to_chart = review_spec_numeric[!grepl("^help",review_spec_numeric)]
+
+
+library(GGally)
+ggp = ggpairs(comp_train[,to_chart],
+              lower = list(continuous = 'density'))
+ggp
+
+```
+
+Hmm... that looks silly
+
+### 3.2 Plotting all features sorted by SalePrice
+
+```{r table_plot, fig.height=4, fig.width=10}  
+## table plot all features on sortded agg_rating
+too_many_cats = c('company_hq', 'company_indeed_url', 'ceo_approval_ratings', 'company_count_QnA', 'company_count_jobs',
+                  'company_count', 'company_name', 'main_text', 'con_text', 'pro_text', 'review_date', 'review_title',
+                 'reviewer_job_location', 'rev_date_num', 'company_count_jobs', 'top_list')
+
+colMtx = names(comp_train)[!(names(comp_train) %in% too_many_cats)]
+length(colMtx)
+
+colMtx <- matrix(names(comp_train)[2:length(comp_train)], nrow = 5)
+dim(colMtx)
+
+for (i in 1:ncol(colMtx)) {
+  tableplot(comp_train, 
+            select_string = c(colMtx[,i], "agg_rating"), 
+            sortCol = "agg_rating", decreasing = TRUE, 
+            nBins = 30)
+}
+```
+Too many outputs. Limiting:
+```{r}
+colMtx <- matrix(review_numerics, nrow = 4)
+dim(colMtx)
+
+for (i in 1:ncol(colMtx)) {
+  tableplot(comp_train, 
+            select_string = c(colMtx[,i], "agg_rating"), 
+            sortCol = "agg_rating", decreasing = TRUE, 
+            nBins = 30)
+}
+```
+
+
+
+```{r}
+
+corM = cor(comp_train[to_chart], use = "complete.obs")
+
+corrplot(corM, method = "color", order = "hclust")
+
+```
+
+Heatmappings
+```{r}
+
+
+ggmat = list()
+g = ggplot(comp_train)
+
+for (i in 1:length(to_chart)) {
+  for (j in 1:length(to_chart)) {
+    print(g + geom_bin2d(aes_string(x = to_chart[i], y = to_chart[j]), bins = 4))
+  }
+}
+
+```
+
+###Through time
+```{r}
+g = ggplot(comp_train)
+g + geom_smooth(aes(x = rev_date_num))
+
+
+
+
+
+ggdf = comp_train %>% 
+  group_by(year, month) %>% 
+  filter(year > 2011) %>% 
+  summarise(n = n(), agg_rating = mean(agg_rating))
+
+comp_train$weekday <- factor(comp_train$weekday,levels=
+                               c('Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'))
+comp_train$month <- factor(comp_train$month,levels=
+                               c('January','February','March','April','May','June','July', 'August', 'September',
+                                 'October', 'November', 'December'))
+
+
+# http://www.sthda.com/english/wiki/ggplot2-line-plot-quick-start-guide-r-software-and-data-visualization
+
+ggdf$month = factor(ggdf$month,levels=
+                               c('January','February','March','April','May','June','July', 'August', 'September',
+                                 'October', 'November', 'December'))
+  
+ggdf2 = comp_train %>% 
+  filter(year>2011) %>% 
+  group_by(weekday, year) %>% 
+  summarise(n = n(), agg_rating = mean(agg_rating))
+
+library(RColorBrewer)
+
+
+ggplot(ggdf2, aes(x=weekday, y= n, ,group= year, color = year)) +
+  geom_line() +
+  geom_point() + scale_color_brewer(palette = 'PuBu') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + ggtitle("Reviews by Weekday") 
+
+ggplot(ggdf2, aes(x=weekday, y= agg_rating, ,group= year, color = year)) +
+  geom_line() +
+  geom_point() + scale_color_brewer(palette = 'PuBu') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + ggtitle("Reviews by Weekday") 
+
+
+
+ggplot(ggdf, aes(x=month, y= n, group= year, color = year)) +
+  geom_line() +
+  geom_point() + scale_color_brewer(palette = 'PuBu') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + ggtitle("Reviews by Month") 
+  
+ggplot(ggdf, aes(x=month, y= agg_rating, group= year, color = year)) +
+  geom_line() +
+  geom_point() + scale_color_brewer(palette = 'PuBu') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + ggtitle("Reviews by Month")  
+
+
+
+```
+
+```{r}
+#https://www.r-bloggers.com/plot-weekly-or-monthly-totals-in-r/
+comp_train$Month <- as.Date(cut(comp_train$rev_date_num,
+  breaks = "month"))
+comp_train$Week <- as.Date(cut(comp_train$rev_date_num,
+  breaks = "week",
+  start.on.monday = FALSE)) 
+
+# graph by month:
+ggplot(data = comp_train,
+  aes(Month, agg_rating)) +
+  stat_summary(fun.y = mean, # adds up all observations for the week
+    geom = "line") + # or "line"
+  scale_x_date(
+    date_labels = "%Y-%m",
+    date_breaks = "3 month") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # custom x-axis labels
+
+
+# graph by week:
+ggplot(data = comp_train,
+  aes(Week, agg_rating)) +
+  stat_summary(fun.y = mean, # adds up all observations for the week
+    geom = "line") + # or "line"
+  scale_x_date(
+    date_labels = "%Y-%m-%d",
+    date_breaks = "1 week") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # custom x-axis labels
+
+
+
+```
+
+
+```{r}
+ggplot(ggdf2, aes(x=weekday, y= agg_rating/n,group= year, color = year)) +
+  geom_line() +
+  geom_point() + scale_color_brewer(palette = 'Blues') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + ggtitle("Mean Rating by Weekday")
+
+ggplotly(ggplot(ggdf, aes(x=month, y= agg_rating/n ,group= year, color = year)) +
+  geom_line() +
+  geom_point() + scale_color_brewer(palette = 'Blues') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + ggtitle("Mean Rating by Month")
+  )
+
+
+
+```
+
+
+Need to drill down to a story or two. Extra graphics here if need be: https://stats.stackexchange.com/questions/133450/visualization-and-overplotting-alternative-to-scatters
+
+Count by indsutry
+```{r}
+g = ggplot(comp_train %>% 
+  group_by(company_industry) %>% 
+  summarise(n = n()) %>% arrange(desc(n))) +
+  geom_bar(aes(x = reorder(company_industry,-n), y = n), stat = 'identity') + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 3))
+ggplotly(g)
+
+```
+
+Plotting ratings through time by industry
+```{r}
+company_agg = comp_train %>% 
+  filter(year>2011) %>% 
+  group_by(year,company_industry) %>% 
+  summarise(n = n(), agg_rating = mean(agg_rating))
+
+# company_agg$date = as.Date(paste(company_agg$year, company_agg$month, '01', sep = '-'), format = '%Y-%B-%d')
+
+company_agg = company_agg[complete.cases(company_agg),]
+
+top_inds = comp_train %>% 
+  group_by(company_industry) %>% 
+  summarise(n = n()) %>% arrange(desc(n)) 
+top_inds = top_inds[1:10,'company_industry']
+
+ggplot(data = company_agg %>% filter(company_industry %in% top_inds$company_industry)) +
+  geom_line(aes(year, agg_rating, color = company_industry, group = company_industry)) +
+  ggtitle("Top 10 Industries") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) # custom x-axis labels
+
+ggplot(data = company_agg %>% filter(company_industry %in% top_inds$company_industry),
+  aes(year, n)) +
+  geom_line(aes(group = company_industry, color = company_industry))
+
+```
+
+```{r}
+#best and worst companies:
+byco_rev = comp_train %>% 
+  filter(year>2016) %>% 
+  group_by(company_name) %>% 
+  summarise(n = n(), mean_agg_rating = mean(agg_rating), company_wide_rating = mean(company_overall_rating))
+
+top10 = byco_rev %>% filter(n > 100) %>% top_n(10, mean_agg_rating)
+bot10 = byco_rev %>% filter(n > 100) %>% top_n(10, -mean_agg_rating)
+
+ggplotly(
+  ggplot(top10, aes(x = reorder(company_name, -mean_agg_rating), y = mean_agg_rating)) + 
+    geom_bar(stat = 'identity') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+)
+
+ggplotly(
+  ggplot(bot10, aes(x = reorder(company_name, -mean_agg_rating), y = mean_agg_rating)) + 
+    geom_bar(stat = 'identity') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+)
+
+```
+
